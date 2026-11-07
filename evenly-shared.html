@@ -66,6 +66,8 @@ input,select{width:100%;background:var(--bg);border:1px solid var(--line);border
 .row{display:flex;align-items:center;gap:12px;padding:8px 0}
 .grow{flex:1;min-width:0}
 .t{font-weight:600}
+.sheet.mid{border-radius:6px;max-width:360px;margin:0 16px;text-align:center;padding:34px 24px 20px;animation:none}
+.code{font-size:34px;font-weight:700;letter-spacing:.04em;background:var(--bg);border-radius:8px;padding:22px 8px;margin-bottom:22px;font-variant-numeric:tabular-nums}
 #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(96px + env(safe-area-inset-bottom,0px));background:#323232;color:#fff;padding:12px 18px;border-radius:10px;z-index:30;max-width:90%;text-align:center;font-size:14px}
 #toast[hidden]{display:none}
 .banner{padding:10px 16px;background:var(--card);color:var(--mute);font-size:14px;border-bottom:1px solid var(--line)}
@@ -81,8 +83,10 @@ input,select{width:100%;background:var(--bg);border:1px solid var(--line);border
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const uid=()=>Math.random().toString(36).slice(2,10);
-let DB=null,RO=false,G=[],S=null,gid=null,unsub=[],draft=null,V=null,ready=false,nodb=false,slow=false,invitePending=false;
+let DB=null,RO=false,ALL=[],G=[],S=null,gid=null,unsub=[],draft=null,V=null,ready=false,nodb=false,slow=false,invitePending=false;
 const asked={};
+const JK="ev-joined";let JOINED=new Set((()=>{try{return JSON.parse(localStorage.getItem(JK))||[]}catch(e){return[]}})());
+const saveJ=()=>{try{localStorage.setItem(JK,JSON.stringify([...JOINED]))}catch(e){}};
 const ME={get:id=>{try{return localStorage.getItem("ev-me-"+id)}catch(e){return null}},set:(id,v)=>{try{localStorage.setItem("ev-me-"+id,v)}catch(e){}}};
 const mem=id=>S.members.find(m=>m.id===id);
 const name=id=>mem(id)?mem(id).name:"Someone";
@@ -99,7 +103,7 @@ const setMem=(id,n)=>ok(sub1("members").doc(id).update({name:n}));
 const delMem=id=>ok(sub1("members").doc(id).delete());
 const setGroup=(n,c)=>ok(gdoc(S.id).update({name:n,cur:c}));
 const setPhoto=d=>ok(d?sub1("meta").doc("photo").set({d}):sub1("meta").doc("photo").delete());
-function newGroup(n){const id=uid();ok(DB.collection("groups").doc(id).set({name:n,cur:S?S.cur:"$",ts:Date.now()}));gid=id;invitePending=true;try{location.hash=id}catch(e){}}
+function newGroup(n){const id=uid();JOINED.add(id);saveJ();ok(DB.collection("groups").doc(id).set({name:n,cur:S?S.cur:"$",ts:Date.now(),code:uniqueCode()}));gid=id;invitePending=true;try{location.hash=id}catch(e){}}
 function delGroup(){const g=S;g.expenses.forEach(e=>delExp(e.id));g.members.forEach(m=>delMem(m.id));ok(gdoc(g.id).delete())}
 
 function shares(e){
@@ -131,15 +135,20 @@ function start(){
   setTimeout(()=>{if(!ready){slow=true;render()}},10000);
   DB.collection("groups").onSnapshot(s=>{
     ready=true;slow=false;
-    const old=Object.fromEntries(G.map(g=>[g.id,g]));
-    G=s.docs.map(d=>Object.assign(old[d.id]||{members:[],expenses:[],tab:"ov",cur:"$"},d.data(),{id:d.id})).sort((a,b)=>(a.ts||0)-(b.ts||0));
-    const want=location.hash.slice(1),next=G.find(g=>g.id===want)||G.find(g=>g.id===gid)||G[0]||null;
-    const changed=(next&&next.id)!==(S&&S.id);
-    S=next;gid=S?S.id:null;
-    if(changed){V=null;sub()}
-    render();
-    if(changed&&invitePending&&S&&S.id===gid){invitePending=false;openInvite()}
+    ALL=s.docs.map(d=>Object.assign({},d.data(),{id:d.id})).sort((a,b)=>(a.ts||0)-(b.ts||0));
+    let nj=0;ALL.forEach(g=>{if(!g.code&&!JOINED.has(g.id)){JOINED.add(g.id);nj=1}});if(nj)saveJ();
+    apply();
   },e=>{ready=true;nodb=true;render()});
+}
+function apply(){
+  const old=Object.fromEntries(G.map(g=>[g.id,g]));
+  G=ALL.filter(g=>JOINED.has(g.id)).map(d=>Object.assign(old[d.id]||{members:[],expenses:[],tab:"ov",cur:"$"},d));
+  const want=location.hash.slice(1),next=G.find(g=>g.id===want)||G.find(g=>g.id===gid)||G[0]||null;
+  const changed=(next&&next.id)!==(S&&S.id);
+  S=next;gid=S?S.id:null;
+  if(changed){V=null;sub()}
+  render();
+  if(changed&&invitePending&&S&&S.id===gid){invitePending=false;openPerson()}
 }
 function sub(){
   unsub.forEach(f=>f());unsub=[];if(!S)return;
@@ -167,7 +176,7 @@ function render(){
   const app=$("#app");
   if(nodb)return app.innerHTML=msg("Shared storage isn’t available here.","Open this page from its claude.ai link while signed in, so everyone sees the same group.");
   if(!ready)return app.innerHTML=msg(slow?"Can’t reach the shared data yet.":"Loading your groups…",slow?"Check your connection. This page will update by itself when it connects.":"");
-  if(!S)return app.innerHTML=msg(RO?"No groups yet.":"Start your first group",RO?"Ask the owner to create one.":"Name it, add the people, then share this page with them.",RO?"":`<div class="inline" style="padding:0 16px"><input id="n-g" placeholder="Trip, flat, dinner club…" maxlength="40" aria-label="Group name"><button class="btn" data-act="newg">Create</button></div>`);
+  if(!S)return app.innerHTML=msg("Start or join a group","Create a group, or enter the code a friend shared with you.",(RO?"":`<div class="inline" style="padding:0 16px"><input id="n-g" placeholder="Name a new group" maxlength="40" aria-label="Group name"><button class="btn" data-act="newg">Create</button></div>`)+`<div style="padding:8px 16px">${joinBox()}</div>`);
   if(V&&mem(V)){app.innerHTML=memberView(V);return}
   V=null;
   const tab=S.tab==="exp"?"exp":"ov",b=balances(),me=ME.get(S.id);
@@ -181,7 +190,7 @@ function render(){
   }
   app.innerHTML=`<header class="hd"><div><div class="bar1"><button class="ib" data-act="groups" aria-label="Your groups">☰</button><h1>${esc(S.name)}</h1><button class="ib" data-act="group" aria-label="Group settings">⋮</button></div><div class="tabs" role="tablist">${[["ov","Overview"],["exp","Expenses"]].map(([k,l])=>`<button role="tab" aria-selected="${tab===k}" data-act="tab" data-t="${k}">${l}</button>`).join("")}</div></div></header>${RO?'<div class="banner">View only. Ask the owner for edit access to add expenses.</div>':""}<main class="wrap">${body}</main>${RO?"":`<button class="fab" data-act="add" aria-label="Add expense">${$("#dial").hidden?"+":"×"}</button>`}`;
 }
-function open(h){$("#sheet").innerHTML=h;$("#ov").hidden=false}
+function open(h,mid){$("#sheet").innerHTML=h;$("#sheet").className="sheet"+(mid?" mid":"");$("#ov").style.alignItems=mid?"center":"flex-end";$("#ov").hidden=false}
 function close(){$("#ov").hidden=true;draft=null}
 function closeDial(){$("#dial").hidden=true;const f=$(".fab");if(f)f.textContent="+"}
 function who(){if(S&&S.members.length&&!asked[S.id]&&!ME.get(S.id)&&$("#ov").hidden&&$("#dial").hidden)openWho()}
@@ -211,13 +220,22 @@ function openAdd(){
   chips();$("#d-t").focus();
 }
 function openGroups(){
-  open(`<h2>Your groups</h2>${G.map(g=>`<button class="li" style="${g.id===gid?"color:var(--or);font-weight:600":""}" data-act="switch" data-id="${g.id}"><span>${esc(g.name)}</span></button>`).join("")}<label for="n-g">New group</label><div class="inline"><input id="n-g" placeholder="Trip, flat, dinner club…" maxlength="40"><button class="btn" data-act="newg">Create</button></div>`);
+  open(`<h2>Your groups</h2>${G.map(g=>`<button class="li" style="${g.id===gid?"color:var(--or);font-weight:600":""}" data-act="switch" data-id="${g.id}"><span>${esc(g.name)}</span></button>`).join("")}<label for="n-g">New group</label><div class="inline"><input id="n-g" placeholder="Trip, flat, dinner club…" maxlength="40"><button class="btn" data-act="newg">Create</button></div>${joinBox()}`);
 }
 function openGroup(){
   open(`<h2>Group settings</h2><label for="g-n">Group name</label><input id="g-n" value="${esc(S.name)}" maxlength="40"><label for="g-c">Currency: any symbol or code</label><input id="g-c" value="${esc(S.cur)}" maxlength="6" placeholder="৳, BDT, kr…"><div class="chips" style="margin-top:8px">${["$","€","£","৳","₹","¥"].map(c=>`<button class="chip" aria-pressed="false" data-act="cur" data-c="${c}">${c}</button>`).join("")}</div><label>Group photo</label><div class="inline"><button class="btn" data-act="photo">${S.photo?"Change photo":"Choose photo"}</button>${S.photo?'<button class="btn ghost" data-act="rmphoto">Remove</button>':""}</div>${G.length>1||S.members.length+S.expenses.length>=0?'<button class="btn full ghost" data-act="delg">Delete group</button>':""}<button class="btn full" data-act="gdone">Done</button>`);
 }
+const AL="23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+function uniqueCode(){let c;do{const a=new Uint8Array(9);crypto.getRandomValues(a);c=[...a].map(x=>AL[x%32]).join("")}while(ALL.some(g=>g.code===c));return c}
+const pretty=c=>c.replace(/(.{3})(?=.)/g,"$1 ");
+const joinBox=()=>`<label for="j-c">Join with a code</label><div class="inline"><input id="j-c" placeholder="8TN 1HX 9YU" maxlength="14" autocapitalize="characters" autocomplete="off"><button class="btn" data-act="joinc">Join</button></div><div class="err" id="err"></div>`;
 function openInvite(){
-  open(`<h2>Invite people</h2><p class="m">Friends join from their own phone. Use <b>Share</b> at the top of this page to add them with edit access and send them the link. When they open it, they pick their name.</p><label>In this group</label><div class="chips" style="margin-bottom:12px">${S.members.map(m=>`<span class="chip" aria-pressed="true">${esc(m.name)}</span>`).join("")||'<span class="m">Nobody yet</span>'}</div><label for="i-n">Add a person by name</label><div class="inline"><input id="i-n" placeholder="Name" maxlength="20"><button class="btn" data-act="addm">Add</button></div><div class="err" id="err"></div><button class="btn full" data-act="close">Done</button>`);
+  if(!S.code&&RO)return open(`<h2>Invite</h2><p class="m">Ask the owner of this page for the group code.</p><button class="btn full" data-act="close">Close</button>`);
+  if(!S.code){const c=uniqueCode();ok(gdoc(S.id).update({code:c}));S.code=c}
+  open(`<div class="code">${pretty(S.code)}</div><p class="m" style="font-size:18px;margin:0">Others can access your group using this code</p><p class="m" style="font-size:13px">They open this page, tap ☰, and enter it under “Join with a code”. Give them edit access from the page’s Share button so they can add expenses.</p><button class="pill" style="margin:18px 0 8px;background:var(--or);color:#fff;font-size:16px" data-act="share">INVITE</button><div><button class="btn" style="background:none;color:var(--or)" data-act="close">LATER</button></div>`,1);
+}
+function openPerson(){
+  open(`<h2>New person</h2><p class="m">Add each person who splits costs in this group.</p><label>In this group</label><div class="chips" style="margin-bottom:12px">${S.members.map(m=>`<span class="chip" aria-pressed="true">${esc(m.name)}</span>`).join("")||'<span class="m">Nobody yet</span>'}</div><label for="i-n">Add a person by name</label><div class="inline"><input id="i-n" placeholder="Name" maxlength="20"><button class="btn" data-act="addm">Add</button></div><div class="err" id="err"></div><button class="btn full" data-act="close">Done</button>`);
   $("#i-n").focus();
 }
 function openWho(){
@@ -246,7 +264,7 @@ function payChips(){
   $("#pto").innerHTML=S.members.map(m=>`<button class="chip" aria-pressed="${draft.to===m.id}" data-act="pto" data-id="${m.id}">${esc(m.name)}</button>`).join("");
 }
 function openPay(){
-  if(S.members.length<2)return openInvite();
+  if(S.members.length<2)return openPerson();
   const me=ME.get(S.id),p=mem(me)?me:S.members[0].id;
   draft={payer:p,to:S.members.find(m=>m.id!==p).id};
   open(`<h2>New payment</h2><p class="m">A payment between two people in the group.</p><label>Who paid?</label><div class="chips" id="pfrom"></div><label>Who received it?</label><div class="chips" id="pto"></div><label for="p-a">Amount (${esc(S.cur)})</label><input id="p-a" class="big" inputmode="decimal" placeholder="0.00"><div class="err" id="err"></div><button class="btn full" data-act="savepay">Save payment</button>`);
@@ -260,9 +278,9 @@ const acts={
   tab:d=>{S.tab=d.t;render()},
   groups:openGroups,group:openGroup,invite:openInvite,settle:openSettleMenu,sugg:openSettle,summ:openSummary,close,
   add:()=>{const d=$("#dial");d.hidden=!d.hidden;$(".fab").textContent=d.hidden?"+":"×"},
-  newexp:()=>{closeDial();S.members.length<2?openInvite():openAdd()},
+  newexp:()=>{closeDial();S.members.length<2?openPerson():openAdd()},
   newpay:()=>{closeDial();openPay()},
-  newper:()=>{closeDial();openInvite()},
+  newper:()=>{closeDial();openPerson()},
   member:d=>{V=d.id;render();scrollTo(0,0)},
   back:()=>{V=null;render()},
   editm:d=>open(`<h2>Edit person</h2><label for="m-n">Name</label><input id="m-n" value="${esc(name(d.id))}" maxlength="20"><div class="err" id="err"></div><button class="btn full" data-act="savem" data-id="${d.id}">Save</button><button class="btn full ghost" data-act="rmm" data-id="${d.id}">Remove from group</button>`),
@@ -271,7 +289,7 @@ const acts={
     if(S.expenses.some(e=>e.payer===d.id||e.split.includes(d.id)))return $("#err").textContent="This person is in existing expenses. Delete those first.";
     delMem(d.id);V=null;close();
   },
-  addm:()=>{const v=$("#i-n").value.trim();if(!v)return;if(S.members.some(m=>m.name.toLowerCase()===v.toLowerCase()))return $("#err").textContent="That name is already in the group.";const id=addMem(v);if(!ME.get(S.id))ME.set(S.id,id);openInvite()},
+  addm:()=>{const v=$("#i-n").value.trim();if(!v)return;if(S.members.some(m=>m.name.toLowerCase()===v.toLowerCase()))return $("#err").textContent="That name is already in the group.";const id=addMem(v);if(!ME.get(S.id))ME.set(S.id,id);openPerson()},
   iam:d=>{ME.set(S.id,d.id);close();render()},
   join:()=>{const v=$("#w-n").value.trim();if(!v)return;const ex=S.members.find(m=>m.name.toLowerCase()===v.toLowerCase());ME.set(S.id,ex?ex.id:addMem(v));close();render()},
   switch:d=>{const g=G.find(x=>x.id===d.id);if(!g)return;S=g;gid=g.id;V=null;close();sub();render()},
@@ -306,6 +324,18 @@ const acts={
   copy:()=>{
     const d=summaryData(),t=S.name+"\nTotal spent: "+fmt(d.tot)+"\n"+d.rows.map(r=>r.n+": paid "+fmt(r.p)+", share "+fmt(r.u)+", balance "+fmt(r.b)).join("\n"),no=()=>$("#err").textContent="Copying isn’t available here.";
     try{navigator.clipboard.writeText(t).then(()=>$("#err").textContent="Copied.",no)}catch(e){no()}
+  },
+  share:()=>{
+    const t="Join “"+S.name+"” on Evenly with the code "+pretty(S.code)+".";
+    if(navigator.share)navigator.share({text:t}).catch(()=>{});
+    else{try{navigator.clipboard.writeText(t).then(()=>toast("Invite copied."),()=>toast(t))}catch(e){toast(t)}}
+  },
+  joinc:()=>{
+    const c=($("#j-c").value||"").replace(/[^A-Za-z0-9]/g,"").toUpperCase();
+    const g=ALL.find(x=>x.code===c);
+    if(!c||!g)return $("#err").textContent="No group found with that code. Check it and try again.";
+    JOINED.add(g.id);saveJ();gid=g.id;try{location.hash=g.id}catch(e){}
+    close();apply();
   },
   detail:d=>openDetail(d.id),
   del:d=>{delExp(d.id);close()},
